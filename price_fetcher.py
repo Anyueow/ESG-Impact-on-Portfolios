@@ -4,15 +4,14 @@ import requests
 from datetime import datetime, timedelta
 import time
 from alpha_vantage.timeseries import TimeSeries
-import os
-
-# You should get your own API key from https://www.alphavantage.co/
-ALPHA_VANTAGE_API_KEY = os.getenv('ALPHA_VANTAGE_API_KEY', 'demo')
+import streamlit as st
 
 def get_alpha_vantage_data(symbol, start_date, end_date):
     """Get stock data from Alpha Vantage"""
     try:
-        ts = TimeSeries(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
+        # Get API key from Streamlit secrets
+        api_key = st.secrets["api_keys"]["alpha_vantage"]
+        ts = TimeSeries(key=api_key, output_format='pandas')
         data, _ = ts.get_daily_adjusted(symbol=symbol, outputsize='full')
         
         # Convert index to datetime if needed
@@ -34,12 +33,13 @@ def get_alpha_vantage_data(symbol, start_date, end_date):
         
         return data[['Close', 'Adj Close', 'Open', 'High', 'Low', 'Volume']]
     except Exception as e:
-        print(f"Alpha Vantage error for {symbol}: {str(e)}")
+        st.warning(f"Alpha Vantage error for {symbol}: {str(e)}")
         return None
 
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def get_stock_data(symbol, start_date, end_date, retry_count=3):
     """
-    Get stock data with fallback options
+    Get stock data with fallback options and caching
     """
     # Try yfinance first
     for attempt in range(retry_count):
@@ -48,44 +48,71 @@ def get_stock_data(symbol, start_date, end_date, retry_count=3):
             if not data.empty:
                 return data
         except Exception as e:
-            print(f"yfinance attempt {attempt + 1} failed for {symbol}: {str(e)}")
+            st.warning(f"yfinance attempt {attempt + 1} failed for {symbol}: {str(e)}")
         time.sleep(1)  # Wait between attempts
     
     # If yfinance fails, try Alpha Vantage
-    print(f"Trying Alpha Vantage for {symbol}")
+    st.info(f"Trying Alpha Vantage for {symbol}")
     av_data = get_alpha_vantage_data(symbol, start_date, end_date)
     if av_data is not None and not av_data.empty:
         return av_data
     
     return None
 
+@st.cache_data(ttl=3600)
 def get_multiple_stocks(symbols, start_date, end_date):
     """
-    Get data for multiple stocks with progress tracking
+    Get data for multiple stocks with progress tracking and caching
     """
     stock_data = {}
     failed_symbols = []
     
-    for symbol in symbols:
-        print(f"Fetching data for {symbol}...")
-        data = get_stock_data(symbol, start_date, end_date)
+    progress_bar = st.progress(0)
+    for i, symbol in enumerate(symbols):
+        progress_bar.progress((i + 1) / len(symbols))
+        st.write(f"Fetching data for {symbol}...")
         
+        data = get_stock_data(symbol, start_date, end_date)
         if data is not None and not data.empty:
             stock_data[symbol] = data
         else:
             failed_symbols.append(symbol)
-            print(f"Failed to get data for {symbol}")
+            st.warning(f"Failed to get data for {symbol}")
     
+    progress_bar.empty()
     return stock_data, failed_symbols
 
+@st.cache_data(ttl=3600)
 def get_spy_data(start_date, end_date):
     """
-    Get S&P500 data with retries
+    Get S&P500 data with retries and caching
     """
     spy_data = get_stock_data('SPY', start_date, end_date, retry_count=5)
     if spy_data is None or spy_data.empty:
         raise ValueError("Could not fetch S&P500 data from any source")
     return spy_data
+
+def get_portfolio_data(stocks, start_date, end_date):
+    """
+    Get portfolio data with proper error handling and progress tracking
+    """
+    stock_data, failed_symbols = get_multiple_stocks(stocks, start_date, end_date)
+    
+    if failed_symbols:
+        st.warning(f"Failed to fetch data for: {', '.join(failed_symbols)}")
+    
+    if not stock_data:
+        return None
+    
+    # Convert to DataFrame with only Close prices
+    portfolio_data = {}
+    for symbol, data in stock_data.items():
+        if isinstance(data.columns, pd.MultiIndex):
+            portfolio_data[symbol] = data[('Close', symbol)]
+        else:
+            portfolio_data[symbol] = data['Close']
+    
+    return pd.DataFrame(portfolio_data)
 
 if __name__ == "__main__":
     # Test the functionality
