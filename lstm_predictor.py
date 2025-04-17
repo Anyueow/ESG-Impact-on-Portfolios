@@ -4,8 +4,8 @@ import tensorflow as tf
 from sklearn.preprocessing import MinMaxScaler
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.models import Sequential, Model
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
 from tensorflow.keras.optimizers import Adam
 import matplotlib.pyplot as plt
 import yfinance as yf
@@ -17,17 +17,25 @@ class LSTMPredictor:
         self.model = None
         
     def create_model(self, dropout_rate=0.2):
-        model = Sequential([
-            LSTM(100, activation='tanh', input_shape=(self.sequence_length, 1), 
-                 return_sequences=True),
-            Dropout(dropout_rate),
-            LSTM(50, activation='tanh', return_sequences=False),
-            Dropout(dropout_rate),
-            Dense(25, activation='relu'),
-            Dense(1)
-        ])
+        # Define input layer
+        inputs = Input(shape=(self.sequence_length, 1))
         
+        # First LSTM layer
+        x = LSTM(100, activation='tanh', return_sequences=True)(inputs)
+        x = Dropout(dropout_rate)(x)
+        
+        # Second LSTM layer
+        x = LSTM(50, activation='tanh', return_sequences=False)(x)
+        x = Dropout(dropout_rate)(x)
+        
+        # Dense layers
+        x = Dense(25, activation='relu')(x)
+        outputs = Dense(1)(x)
+        
+        # Create model
+        model = Model(inputs=inputs, outputs=outputs)
         model.compile(optimizer=Adam(learning_rate=0.001), loss='mse')
+        
         self.model = model
         return model
     
@@ -52,26 +60,35 @@ class LSTMPredictor:
             validation_split=validation_split,
             epochs=epochs,
             batch_size=batch_size,
-            verbose=1
+            verbose=0
         )
         return history
     
     def predict_future(self, last_sequence, n_future):
-        curr_sequence = last_sequence.copy()
-        future_predictions = []
-        
-        curr_sequence = curr_sequence.reshape((1, -1, 1))
+        if self.model is None:
+            raise ValueError("Model not trained. Call train() first.")
+            
+        predictions = []
+        current_sequence = last_sequence.copy()
         
         for _ in range(n_future):
-            pred = self.model.predict(curr_sequence, verbose=0)
-            future_predictions.append(pred[0])
+            # Scale the current sequence
+            scaled_sequence = self.scaler.transform(current_sequence.reshape(-1, 1))
+            
+            # Reshape for prediction
+            x = scaled_sequence.reshape(1, self.sequence_length, 1)
+            
+            # Make prediction
+            pred = self.model.predict(x, verbose=0)
+            
+            # Inverse transform the prediction
+            pred = self.scaler.inverse_transform(pred)[0][0]
+            predictions.append(pred)
             
             # Update sequence
-            curr_sequence = np.roll(curr_sequence, -1, axis=1)
-            curr_sequence[0, -1, 0] = pred[0]
-        
-        future_predictions = np.array(future_predictions).reshape(-1, 1)
-        return self.scaler.inverse_transform(future_predictions)
+            current_sequence = np.append(current_sequence[1:], pred)
+            
+        return np.array(predictions).reshape(-1, 1)
 
 def plot_predictions(historical_data, predictions, future_dates):
     fig = go.Figure()
